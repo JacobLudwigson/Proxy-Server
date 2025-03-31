@@ -10,12 +10,21 @@
 #include <arpa/inet.h>
 #include <signal.h>
 #include <stdatomic.h>
+#include <openssl/md5.h>
 #define ERROR -1
 #define MAX_CLIENTS 100000 //Maybe?
 #define MAX_DATA 2048 //Maybe?
 #define LINETERMINATOR "\r\n"
 #define HEADERSEPARATOR "\r\n\r\n"
 atomic_int countActiveThreads;
+atomic_int countActiveFiles;
+pthread_mutex_t mutex;
+typedef struct fileEntry{
+    unsigned char* hash;
+    unsigned char* filename;
+    time_t timestamp;
+}fileEntry;
+fileEntry* fileArray;
 typedef struct httpPacket{ 
     unsigned char* data;
     int status;
@@ -159,7 +168,7 @@ void buildResponsePacket(struct httpPacket* requestPacket, struct httpPacket* re
         strcpy(requestPacket->pageRequest,"/index.html");
     }
     //Might want to change this? Filenames probably shouldnt be over 100 characters but this could overflow buffer as is 
-    char filename[100]= "www";
+    char filename[100]= "cache";
     strcat(filename,requestPacket->pageRequest);
     if (access(filename, F_OK) != 0){
         errorPacket(404, responsePacket);
@@ -199,6 +208,45 @@ void buildResponsePacket(struct httpPacket* requestPacket, struct httpPacket* re
     responsePacket->status = 200;
     return;
 }
+void compute_md5(char* filename, char* hashBuffer){
+    MD5_CTX ctx;
+    MD5_Init(&ctx);
+    MD5_Update(&ctx, filename, strlen(filename));
+    MD5_Final(hashBuffer, &ctx);
+}
+// Note to self: Keep an eye out for better ways to do this w/o needing a mutex.
+// THEORECTICALLY since this is only reading I shouldnt need this, but its a sanity check for now.
+int checkCache(char* filename, int pageTimeout){
+    char hash[16];
+    int index = -1;
+    compute_md5(filename, hash);
+    pthread_mutex_lock(&mutex);
+    for (int i = 0; i < countActiveFiles; i++){
+        fileEntry currFile = fileArray[i];
+        if (!memcmp(hash,currFile.hash,16)){
+            return i;
+        }
+    }
+    pthread_mutex_unlock(&mutex);
+    return index;
+}
+void insertIntoCache(char* filename){
+    fileEntry newFile;
+    newFile.hash = (unsigned char*) malloc(16 * sizeof(char));
+    //This is a lot of characters for a url if you ask me, but Im sure CJ would love to test for something like this.
+    //From what I could find most search engines wont give you anything larger than 8k characters, yet most are below 2048.
+    newFile.filename = (unsigned char*) malloc(2048 * sizeof(char));
+    strcpy(filename,newFile.filename);
+    compute_md5(filename, newFile.hash);
+    newFile.timestamp = time(NULL);
+    pthread_mutex_lock(&mutex);
+
+    pthread_mutex_unlock(&mutex);
+}
+//Note to self to free fileEntry structure elements, they are allocated in insertIntoCache
+void refreshCache(char* filename){
+
+}
 //ALL FIELDS OF PACKETS ARE THIS FUNCTIONS JOB TO FREE (I.E. A BUFFER WILL BE ALLOCATED FOR "data" SECTION OF HTTP PACKET THAT WILL NOT HAVE A COORESPONDING FREE)
 void* serveClient(void* data){
     atomic_fetch_add(&countActiveThreads,1);
@@ -210,6 +258,7 @@ void* serveClient(void* data){
     int data_len = 1;
     int persistant = 0;
     int decodeStatus;
+    int cacheStatus;
     int length = 0;
     int bytesSent;
     char* buffer = calloc(1,MAX_DATA);
@@ -222,7 +271,21 @@ void* serveClient(void* data){
             break;
         }
         decodeStatus = decodeHttpPacket(requestPacket, buffer, data_len);
-        fwrite(buffer,1,data_len,stdout);
+        cacheStatus = checkCache(requestPacket->pageRequest);
+        printf("This is the page requested: %s\n",requestPacket->pageRequest);
+        printf("Current page Cache status: %d\n",cacheStatus);
+
+
+        /*
+
+            1. Check cache for file
+                1. Decomp requested file from url using some templating or some shit - DO NOT USE HOST FIELD
+                2. 
+            2. If Exists - Retreive it using buildResponsePacket
+            3. If does not exists - request it using reqRemHostData & cache it, return it using buildResponsePacket
+            
+        */
+        // fwrite(buffer,1,data_len,stdout);
         buildResponsePacket(requestPacket, responsePacket, decodeStatus);
         length = MAX_DATA/2 + responsePacket->contentLength + 1;
         responseBuffer = (unsigned char*) calloc(1,length);
@@ -268,7 +331,7 @@ void* serveClient(void* data){
 }
 int main(int argc, char **argv){
     if (argc < 3){
-        printf("Incorrect Number of Args! Run with ./server [Port Number]\n");
+        printf("Incorrect Number of Args! Run with ./server [Port Number] [Cache timeout]\n");
         exit(-1);
     }
     struct sockaddr_in server;
@@ -279,7 +342,11 @@ int main(int argc, char **argv){
     int data_len;
     char data[MAX_DATA];
     unsigned int pageTimeout = atoi(argv[2]);
-
+    // int result = pthread_mutex_init(&mutex, NULL);
+    // if (result != 0){
+    //     perror("Error in mutex init!\n");
+    //     exit(-1);
+    // }
     if ((sock = socket(AF_INET, SOCK_STREAM, 0)) == ERROR){
         perror("Error in socket : ");
         exit(-1);
