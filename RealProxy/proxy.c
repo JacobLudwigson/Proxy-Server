@@ -76,14 +76,23 @@ void* serveClient(void* data){
                 perror("Failed to create file");
                 exit(-1);
             }
-            char* recvBuffer;
+            char* recvBuffer = NULL;
+            // printf("=====================\n");
+            // fwrite(buffer, 1, data_len, stdout);
+            // replace_url_with_path(buffer);
+            
+            // fwrite(buffer, 1, data_len, stdout);            
             int bytes = forwardRequest(hostname_with_port, buffer, data_len, &recvBuffer);
             // puts(recvBuffer);
             struct httpPacket* recvPacket = (httpPacket*) calloc(1, sizeof(httpPacket));
             decodeHttpPacket(recvPacket, recvBuffer);
+            printPacket(recvPacket,buffer, data_len);
+            // print_buffer_with_newlines_and_nulls(recvBuffer, bytes);
+
+            printf("HELLO I AM TRYING TO PRINT THIS!\n");
+
             memset(recvBuffer, 0, RESPONSE_MAX);
-            printPacket(recvPacket, recvBuffer, RESPONSE_MAX);
-            // fwrite(recvBuffer->data, 1, bytes, filePtr);
+            // printPacket(recvPacket, recvBuffer, RESPONSE_MAX);
             // puts(recvBuffer);
             free(recvBuffer);
             free(recvPacket);

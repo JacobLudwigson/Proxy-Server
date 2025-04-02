@@ -65,11 +65,13 @@ void printPacket(struct httpPacket* packet, char* buffer, size_t bufferSize){
     );
     puts(buffer);
 }
-int decodeHttpPacket(struct httpPacket* packet, char* buffer){
-    if (!buffer) {
+int decodeHttpPacket(struct httpPacket* packet, char* buffer1){
+    if (!buffer1) {
         printf("Invalid Buffer!\n");
         return 0;
     }
+    char buffer[strlen(buffer1)+1];
+    strcpy(buffer, buffer1);
     char* line = strtok(buffer, "\r\n");
     char first[50];
     char second[1024];
@@ -178,6 +180,69 @@ void buildResponsePacket(struct httpPacket* requestPacket, struct httpPacket* re
     responsePacket->status = OK;
     return;
 }
+void replace_url_with_path(char *http_request) {
+    // Find the position of the space after the method (GET)
+    char *url_start = strchr(http_request, ' '); // Find space after GET
+    if (!url_start) return; // If no space found, return (invalid format)
+    url_start++;  // Move past the space to start of the URL
+
+    // Find the position of the space after the URL (before HTTP version)
+    char *url_end = strchr(url_start, ' ');  // Find space after URL
+    if (!url_end) return; // If no space found, return (invalid format)
+
+    // Extract the URL from the request
+    size_t url_length = url_end - url_start;
+    char url[url_length + 1];
+    strncpy(url, url_start, url_length);
+    url[url_length] = '\0';  // Null-terminate the extracted URL
+
+    // Find the position of the first '/' after the host in the URL
+    char *path_start = strchr(url, '/');
+    if (!path_start) return; // If there's no path (just domain), return (invalid URL)
+
+    // Construct the new URL with just the path (i.e., starting from the first '/')
+    char new_path[1024];  // Buffer to store the new path
+
+    // If the path starts with '/', we use it directly
+    if (path_start) {
+        strcpy(new_path, path_start);
+    } else {
+        strcpy(new_path, "/");  // If no path, set it to "/"
+    }
+
+    // Now replace the original URL with the new path in the HTTP request
+    size_t prefix_len = url_end - http_request + 1;  // Include the space before HTTP version
+    size_t http_request_len = strlen(http_request);
+
+    // Shift the rest of the request to accommodate the new path
+    memmove(url_start + strlen(new_path), url_end, http_request_len - (url_end - http_request));
+
+    // Copy the new path into the HTTP request
+    memcpy(url_start, new_path, strlen(new_path));
+
+    // Null-terminate the modified request
+    http_request[http_request_len] = '\0';
+}
+void print_buffer_with_newlines_and_nulls(const char *buffer, unsigned int bufferLength) {
+    // Iterate over each character in the buffer, including the null terminator
+    for (size_t i = 0; i <= bufferLength; i++) {
+        if (buffer[i] == '\r') {
+            // Print \r explicitly for carriage return
+            printf("\\r");
+        } else if (buffer[i] == '\n') {
+            // Print \n explicitly for newline
+            printf("\\n");
+        } else if (buffer[i] == '\0') {
+            // Print \0 explicitly for null terminator
+            printf("\\0");
+        } else {
+            // Print the character as is
+            putchar(buffer[i]);
+        }
+    }
+    printf("\n");  // Print a final newline to finish output
+}
+
 /*
     Still need some work here. This will send the packet, not receive it.
 */
@@ -213,6 +278,7 @@ int forwardRequest(char* hostname_with_port, char* buffer, ssize_t bufferLength,
 
 
     bzero(&serveraddr, sizeof(serveraddr));
+
     //RESOLVE HOSTNAME AND EXTRACT PORT HERE
     serveraddr.sin_family = AF_INET;
     serveraddr.sin_port = htons(port);
@@ -222,7 +288,8 @@ int forwardRequest(char* hostname_with_port, char* buffer, ssize_t bufferLength,
         perror("Couldnt connect with server!\n");
         exit(-1);
     }
-
+    // print_buffer_with_newlines_and_nulls(buffer, bufferLength);
+    // fwrite(buffer, 1, bufferLength, stdout);
     if (send(sockfd, buffer, bufferLength, 0) != bufferLength) {
         perror("send failed");
         exit(-1);
@@ -250,6 +317,7 @@ int forwardRequest(char* hostname_with_port, char* buffer, ssize_t bufferLength,
     }
 
     response[total_received] = '\0'; // Null-terminate
+    // fwrite(response, 1, total_received, stdout);
     *response_out = response;
 
     close(sockfd);

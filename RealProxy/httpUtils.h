@@ -14,7 +14,7 @@
 #define NOT_FOUND 404
 #define FILEDIRECTORY "cache"
 #define MAX_URL_LENGTH 100
-#define RESPONSE_MAX 2048 //Maybe?
+#define RESPONSE_MAX 5000 //Maybe?
 typedef struct httpPacket{ 
     unsigned char* data;
     int status;
@@ -34,6 +34,8 @@ void printPacket(struct httpPacket* packet, char* buffer, size_t bufferSize);
 int decodeHttpPacket(struct httpPacket* packet, char* buffer);
 void get_hostname_from_url(const char *url, char *hostname);
 void errorPacket(int errorCode, struct httpPacket* responsePacket);
+void replace_url_with_path(char *http_request);
+void print_buffer_with_newlines_and_nulls(const char *buffer, unsigned int bufferLength);
 int forwardRequest(char* hostname_with_port, char* buffer, ssize_t bufferLength, char** response);
 void buildResponsePacket(struct httpPacket* requestPacket, struct httpPacket* responsePacket, int decode);
 #endif
