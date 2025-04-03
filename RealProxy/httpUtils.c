@@ -21,6 +21,65 @@ const char* get_content_type(const char* filename) {
         return "application/octet-stream";
     }
 }
+const char* get_file_extension_or_default(const char* url) {
+    const char *lastSlash = strrchr(url, '/');
+    if (!lastSlash) {
+        lastSlash = url;  // No slash found, consider the whole URL
+    } else {
+        lastSlash++;  // Move past the slash
+    }
+
+    const char *dot = strrchr(lastSlash, '.');
+    if (!dot || dot == url) {
+        if (url[strlen(url) - 1] == '/') {
+            return ".html";
+        } else {
+            return "";
+        }
+    }
+
+    if (!strcmp(dot, ".htm") || !strcmp(dot, ".html")) {
+        return ".html";
+    } else if (!strcmp(dot, ".css")) {
+        return ".css";
+    } else if (!strcmp(dot, ".js")) {
+        return ".js";
+    } else if (!strcmp(dot, ".jpeg") || !strcmp(dot, ".jpg")) {
+        return ".jpg";
+    } else if (!strcmp(dot, ".png")) {
+        return ".png";
+    } else if (!strcmp(dot, ".gif")) {
+        return ".gif";
+    } else if (!strcmp(dot, ".txt")) {
+        return ".txt";
+    } else if (!strcmp(dot, ".ico")) {
+        return ".ico";
+    } else {
+        return dot; 
+    }
+}
+
+const char* get_file_type(const char* contentType) {
+    if (!strcmp(contentType, "text/html")){
+        return ".html";
+    } else if (!strcmp(contentType, "text/css")) {
+        return ".css";
+    } else if (!strcmp(contentType, "application/javascript")) {
+        return ".js";
+    } else if (!strcmp(contentType, "image/jpg")) {
+        return ".jpg";
+    } else if (!strcmp(contentType, "image/png")) {
+        return ".png";
+    } else if (!strcmp(contentType, "image/gif")) {
+        return ".gif";
+    } else if (!strcmp(contentType, "text/plain")) {
+        return ".txt";
+    } else if (!strcmp(contentType, "image/x-icon")) {
+        return ".ico";
+    } else {
+        return ".bin";
+    }
+}
 
 
 int formulateHttpPacket(struct httpPacket* packet, char* buffer, size_t bufferSize){
@@ -49,9 +108,8 @@ int formulateHttpPacket(struct httpPacket* packet, char* buffer, size_t bufferSi
 }
 
 
-void printPacket(struct httpPacket* packet, char* buffer, size_t bufferSize){
-    snprintf(buffer, bufferSize,
-        "%s %d %s\r\n"
+void printPacket(struct httpPacket* packet){
+    printf("%s %d %s\r\n"
         "Connection: %s\r\n"
         "Content-Type: %s\r\n"
         "Content-Length: %d\r\n"
@@ -63,7 +121,6 @@ void printPacket(struct httpPacket* packet, char* buffer, size_t bufferSize){
         packet->contentType ? packet->contentType : "",
         packet->contentLength ? packet->contentLength : 0
     );
-    puts(buffer);
 }
 int decodeHttpPacket(struct httpPacket* packet, char* buffer1){
     if (!buffer1) {
@@ -98,7 +155,68 @@ int decodeHttpPacket(struct httpPacket* packet, char* buffer1){
             strcpy(packet->contentType, second);
         }
     }
+    // puts(buffer1);
+    // printPacket(packet);
     return 1;
+}
+int decodeRecvPacket(struct httpPacket* packet, char* buffer1){
+    if (!buffer1) {
+        printf("Invalid Buffer!\n");
+        return 0;
+    }
+    size_t len = strlen(buffer1)+1;
+    char buffer[len];
+    strcpy(buffer, buffer1);
+    char* line = strtok(buffer, "\r\n");
+    char first[50];
+    char temp[50];
+    char second[1024];
+    if (line && sscanf(line, "%49s %49s %49s",packet->httpVersion, temp, packet->statusMessage) != 3){
+        printf("Invalid Scan 1!\n");
+        return 0;
+    }
+    packet->status = atoi(temp);
+    while ((line = strtok(NULL, "\r\n")) != NULL){
+        if (strcmp(line,"") == 0 || (*(line-2) == '\r')){
+            break;
+        }
+        if (sscanf(line, "%s %s", first,second) != 2){
+            printf("Invalid Scan 2!\n");
+            return 0;
+        } 
+        first[strlen(first)-1] = '\0';
+        if (strcmp(first, "Host") == 0){
+            strcpy(packet->host, second);
+        }
+        else if (strcmp(first, "Connection") == 0){
+            strcpy(packet->connection, second);
+        }
+        else if (strcmp(first, "Accept") == 0){
+            strcpy(packet->contentType, second);
+        }
+        else if (strcmp(first, "Content-Length") == 0){
+            packet->contentLength = atoi(second);
+        }
+    }
+    if (line == NULL) return -1;
+    else return line - buffer;
+}
+void stripHttp(const char *url, char *result){
+    const char *start = url;
+    if (strncmp(url, "http://", 7) == 0) {
+        start = url + 7; 
+    } else if (strncmp(url, "https://", 8) == 0) { 
+        start = url + 8; 
+    }
+    strncpy(result, start, (url+strlen(url)) - start);
+}
+void extractReqFile(const char *url, char *result){
+    const char *end = strchr(url, '/');
+    if (end == NULL) {
+        strcpy(result, "/\0");
+        return;
+    }
+    strncpy(result, end, (url + strlen(url)) - end);
 }
 void get_hostname_from_url(const char *url, char *hostname) {
     const char *start = url;
@@ -140,9 +258,10 @@ void buildResponsePacket(struct httpPacket* requestPacket, struct httpPacket* re
     if (strcmp(requestPacket->pageRequest,"/") == 0){
         strcpy(requestPacket->pageRequest,"/index.html");
     }
-    char filename[MAX_FILENAME_SIZE]= FILEDIRECTORY;
-    strcat(filename,requestPacket->pageRequest);
+    char filename[MAX_FILENAME_SIZE];
+    strcpy(filename,requestPacket->pageRequest);
     if (access(filename, F_OK) != 0){
+        printf("ATTEMPTING TO OPEN: %s\n",filename);
         errorPacket(NOT_FOUND, responsePacket);
         return;
     }
@@ -179,49 +298,6 @@ void buildResponsePacket(struct httpPacket* requestPacket, struct httpPacket* re
     fclose(fptr);
     responsePacket->status = OK;
     return;
-}
-void replace_url_with_path(char *http_request) {
-    // Find the position of the space after the method (GET)
-    char *url_start = strchr(http_request, ' '); // Find space after GET
-    if (!url_start) return; // If no space found, return (invalid format)
-    url_start++;  // Move past the space to start of the URL
-
-    // Find the position of the space after the URL (before HTTP version)
-    char *url_end = strchr(url_start, ' ');  // Find space after URL
-    if (!url_end) return; // If no space found, return (invalid format)
-
-    // Extract the URL from the request
-    size_t url_length = url_end - url_start;
-    char url[url_length + 1];
-    strncpy(url, url_start, url_length);
-    url[url_length] = '\0';  // Null-terminate the extracted URL
-
-    // Find the position of the first '/' after the host in the URL
-    char *path_start = strchr(url, '/');
-    if (!path_start) return; // If there's no path (just domain), return (invalid URL)
-
-    // Construct the new URL with just the path (i.e., starting from the first '/')
-    char new_path[1024];  // Buffer to store the new path
-
-    // If the path starts with '/', we use it directly
-    if (path_start) {
-        strcpy(new_path, path_start);
-    } else {
-        strcpy(new_path, "/");  // If no path, set it to "/"
-    }
-
-    // Now replace the original URL with the new path in the HTTP request
-    size_t prefix_len = url_end - http_request + 1;  // Include the space before HTTP version
-    size_t http_request_len = strlen(http_request);
-
-    // Shift the rest of the request to accommodate the new path
-    memmove(url_start + strlen(new_path), url_end, http_request_len - (url_end - http_request));
-
-    // Copy the new path into the HTTP request
-    memcpy(url_start, new_path, strlen(new_path));
-
-    // Null-terminate the modified request
-    http_request[http_request_len] = '\0';
 }
 void print_buffer_with_newlines_and_nulls(const char *buffer, unsigned int bufferLength) {
     // Iterate over each character in the buffer, including the null terminator

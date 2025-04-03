@@ -55,7 +55,6 @@ void* serveClient(void* data){
     struct httpPacket* requestPacket = (httpPacket*) calloc(1, sizeof(httpPacket));
     struct httpPacket* responsePacket= (httpPacket*) calloc(1, sizeof(httpPacket));
     do {
-        // printf("BEGINNING SERVICE MA BOY!\n");
         data_len = recv(socket, buffer,MAX_DATA,0);
         if (data_len < 0) {
             printf("Client timeout, returning...\n");
@@ -65,10 +64,18 @@ void* serveClient(void* data){
         cacheStatus = insertIntoCache(requestPacket->pageRequest, &cache);
         fileEntry* file = cache.items[cacheStatus];
         char filename[MAX_FILENAME_SIZE] = FILEDIRECTORY;
+        char httpStrippedUrl[MAX_URL_LENGTH];
+        char requestedFile[MAX_URL_LENGTH];
         char hostname_with_port[MAX_URL_LENGTH];
+        stripHttp(requestPacket->pageRequest, httpStrippedUrl);
+        extractReqFile(httpStrippedUrl, requestedFile);
+        const char* extension = get_file_extension_or_default(requestedFile);
         get_hostname_from_url(requestPacket->pageRequest, hostname_with_port);
+        // get_file_extension_or_default(requestPacket->pageRequest)
         strcat(filename,"/");
         strcat(filename,hostname_with_port);
+        printf("HERE IS THE FILE EXTENSION :%s\n", extension);
+        strcat(filename, extension);
         FILE *filePtr = fopen(filename, "r");
         if (!filePtr) {
             filePtr = fopen(filename, "w");
@@ -76,29 +83,20 @@ void* serveClient(void* data){
                 perror("Failed to create file");
                 exit(-1);
             }
-            char* recvBuffer = NULL;
-            // printf("=====================\n");
-            // fwrite(buffer, 1, data_len, stdout);
-            // replace_url_with_path(buffer);
-            
-            // fwrite(buffer, 1, data_len, stdout);            
+            char* recvBuffer = NULL;        
             int bytes = forwardRequest(hostname_with_port, buffer, data_len, &recvBuffer);
-            // puts(recvBuffer);
             struct httpPacket* recvPacket = (httpPacket*) calloc(1, sizeof(httpPacket));
-            decodeHttpPacket(recvPacket, recvBuffer);
-            printPacket(recvPacket,buffer, data_len);
-            // print_buffer_with_newlines_and_nulls(recvBuffer, bytes);
-
-            printf("HELLO I AM TRYING TO PRINT THIS!\n");
-
-            memset(recvBuffer, 0, RESPONSE_MAX);
-            // printPacket(recvPacket, recvBuffer, RESPONSE_MAX);
-            // puts(recvBuffer);
+            int dataOffset = decodeRecvPacket(recvPacket, recvBuffer);
+            if (dataOffset != -1){
+                char* dataStart = recvBuffer + dataOffset;
+                fwrite(dataStart, 1, recvPacket->contentLength, filePtr);
+            }
             free(recvBuffer);
             free(recvPacket);
         }
         fclose(filePtr);
         pthread_mutex_unlock(&file->fileLock);
+        strcpy(requestPacket->pageRequest,filename);
         // printCacheFilenames();
         /*
 

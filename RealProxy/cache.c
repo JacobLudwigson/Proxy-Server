@@ -1,4 +1,5 @@
 #include "cache.h"
+pthread_mutex_t mutex;
 void clear_cache_directory(const char *dirPath) {
     DIR *dir = opendir(dirPath);
     if (!dir) {

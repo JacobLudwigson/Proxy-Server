@@ -8,9 +8,6 @@
 #include <dirent.h>
 #include "dynArr.h"
 #include "httpUtils.h"
-atomic_int countActiveFiles;
-atomic_int currSizeFileArray;
-pthread_mutex_t mutex;
 typedef struct fileEntry{
     unsigned char* hash;
     char* filename;
