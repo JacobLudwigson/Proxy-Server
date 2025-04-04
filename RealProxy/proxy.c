@@ -56,10 +56,14 @@ void* serveClient(void* data){
     struct httpPacket* responsePacket= (httpPacket*) calloc(1, sizeof(httpPacket));
     do {
         data_len = recv(socket, buffer,MAX_DATA,0);
-        if (data_len < 0) {
+        if (data_len < 5) {
             printf("Client timeout, returning...\n");
             break;
         }
+        //If forwardRequest thread already created, skip creating again. Place request inside of shared buffer implement synchronization using a mutex. 
+        //Implement timeout via signals? signal on data placed in? maybe reader/writer semaphores. 
+        printf("HERE IS THE REQUEST PACKET!\n");
+        fwrite(buffer, 1, data_len, stdout);
         decodeStatus = decodeHttpPacket(requestPacket, buffer);
         cacheStatus = insertIntoCache(requestPacket->pageRequest, &cache);
         fileEntry* file = cache.items[cacheStatus];
@@ -70,21 +74,20 @@ void* serveClient(void* data){
         stripHttp(requestPacket->pageRequest, httpStrippedUrl);
         extractReqFile(httpStrippedUrl, requestedFile);
         const char* extension = get_file_extension_or_default(requestedFile);
+        printf("Attempting to serve: %s\n", requestPacket->pageRequest);
         get_hostname_from_url(requestPacket->pageRequest, hostname_with_port);
         // get_file_extension_or_default(requestPacket->pageRequest)
         strcat(filename,"/");
-        strcat(filename,hostname_with_port);
-        printf("HERE IS THE FILE EXTENSION :%s\n", extension);
+        strcat(filename,(char*)file->hash);
         strcat(filename, extension);
+        printf("FILENAME %s", filename);
         FILE *filePtr = fopen(filename, "r");
         if (!filePtr) {
-            filePtr = fopen(filename, "w");
-            if (!filePtr) {
-                perror("Failed to create file");
-                exit(-1);
-            }
             char* recvBuffer = NULL;        
-            int bytes = forwardRequest(hostname_with_port, buffer, data_len, &recvBuffer);
+            int bytes = forwardRequest(hostname_with_port, buffer, data_len, &recvBuffer, filename);
+            //----------------------------------------------------------------------------
+            //This code block should happen in forwardrequest() not here
+            //There is nothing that requires parameters here.
             struct httpPacket* recvPacket = (httpPacket*) calloc(1, sizeof(httpPacket));
             int dataOffset = decodeRecvPacket(recvPacket, recvBuffer);
             if (dataOffset != -1){
@@ -93,6 +96,8 @@ void* serveClient(void* data){
             }
             free(recvBuffer);
             free(recvPacket);
+            //----------------------------------------------------------------------------
+
         }
         fclose(filePtr);
         pthread_mutex_unlock(&file->fileLock);

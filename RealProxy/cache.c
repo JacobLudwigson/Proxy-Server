@@ -78,7 +78,6 @@ int insertIntoCache(char* filename, DynamicArray* cache){
     pthread_mutex_lock(&mutex);//=========================/
         int retVal = checkCache(filename, cache);
         if (retVal == -1){
-            printf("CREATING NEW ENTRY!\n");
             fileEntry* newFile = (fileEntry*) malloc(sizeof(fileEntry));
             newFile->hash = (unsigned char*) malloc(16 * sizeof(char));
             newFile->filename = (char*) malloc(MAX_FILENAME_SIZE * sizeof(char));

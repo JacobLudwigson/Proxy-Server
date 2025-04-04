@@ -322,7 +322,7 @@ void print_buffer_with_newlines_and_nulls(const char *buffer, unsigned int buffe
 /*
     Still need some work here. This will send the packet, not receive it.
 */
-int forwardRequest(char* hostname_with_port, char* buffer, ssize_t bufferLength, char** response_out){
+int forwardRequest(char* hostname_with_port, char* buffer, ssize_t bufferLength, char** response_out, char* filename){
     int sockfd;
     struct sockaddr_in serveraddr;
     struct hostent *server;
@@ -379,8 +379,30 @@ int forwardRequest(char* hostname_with_port, char* buffer, ssize_t bufferLength,
     }
 
     size_t total_received = 0;
+    int receivingData = 0;
     ssize_t bytes_received;
+    ssize_t dataSectionBytesReceived;
+    FILE* fptr;
+    char* result;
     while ((bytes_received = recv(sockfd, response + total_received, RESPONSE_MAX - total_received - 1, 0)) > 0) {
+        if (!receivingData){
+            result = strstr(response+total_received, "\r\n\r\n");
+            if (!result){
+                receivingData = 1;
+                fptr = fopen(filename, "w");
+                if (!fptr){
+                    perror("Failed to create file!\n");
+                    return 0;
+                }
+            }
+        }
+        if (receivingData){
+            if (!result && !fptr) {
+                perror("How did we get here?\n");
+                return 0;
+            }
+            fwrite(result, 1, bytes_received, fptr);
+        }
         total_received += bytes_received;
         if (total_received >= RESPONSE_MAX - 1) break; // prevent overflow
     }
