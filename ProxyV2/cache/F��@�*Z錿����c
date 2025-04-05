@@ -1,13 +1,3 @@
-HTTP/1.1 200 OK
-Date: Fri, 04 Apr 2025 22:20:55 GMT
-Server: Apache/2.4.6 (Red Hat Enterprise Linux)
-Last-Modified: Tue, 01 Sep 2015 15:49:52 GMT
-ETag: "2294-51eb1802c8800"
-Accept-Ranges: bytes
-Content-Length: 8852
-Connection: close
-Content-Type: text/css
-
 /*
  * FancyBox - jQuery Plugin
  * Simple and fancy lightbox alternative
