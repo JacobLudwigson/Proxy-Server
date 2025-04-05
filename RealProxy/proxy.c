@@ -62,58 +62,29 @@ void* serveClient(void* data){
         }
         //If forwardRequest thread already created, skip creating again. Place request inside of shared buffer implement synchronization using a mutex. 
         //Implement timeout via signals? signal on data placed in? maybe reader/writer semaphores. 
-        printf("HERE IS THE REQUEST PACKET!\n");
         fwrite(buffer, 1, data_len, stdout);
         decodeStatus = decodeHttpPacket(requestPacket, buffer);
         cacheStatus = insertIntoCache(requestPacket->pageRequest, &cache);
-        fileEntry* file = cache.items[cacheStatus];
-        char filename[MAX_FILENAME_SIZE] = FILEDIRECTORY;
-        char httpStrippedUrl[MAX_URL_LENGTH];
-        char requestedFile[MAX_URL_LENGTH];
+        fileEntry* file = cache.items[abs(cacheStatus)-1];
         char hostname_with_port[MAX_URL_LENGTH];
-        stripHttp(requestPacket->pageRequest, httpStrippedUrl);
-        extractReqFile(httpStrippedUrl, requestedFile);
-        const char* extension = get_file_extension_or_default(requestedFile);
+
+
+
         printf("Attempting to serve: %s\n", requestPacket->pageRequest);
+
         get_hostname_from_url(requestPacket->pageRequest, hostname_with_port);
-        // get_file_extension_or_default(requestPacket->pageRequest)
-        strcat(filename,"/");
-        strcat(filename,(char*)file->hash);
-        strcat(filename, extension);
-        printf("FILENAME %s", filename);
-        FILE *filePtr = fopen(filename, "r");
-        if (!filePtr) {
-            char* recvBuffer = NULL;        
-            int bytes = forwardRequest(hostname_with_port, buffer, data_len, &recvBuffer, filename);
-            //----------------------------------------------------------------------------
-            //This code block should happen in forwardrequest() not here
-            //There is nothing that requires parameters here.
-            struct httpPacket* recvPacket = (httpPacket*) calloc(1, sizeof(httpPacket));
-            int dataOffset = decodeRecvPacket(recvPacket, recvBuffer);
-            if (dataOffset != -1){
-                char* dataStart = recvBuffer + dataOffset;
-                fwrite(dataStart, 1, recvPacket->contentLength, filePtr);
-            }
-            free(recvBuffer);
-            free(recvPacket);
-            //----------------------------------------------------------------------------
-
+        if (cacheStatus < 0) {
+            forwardRequest(hostname_with_port, buffer, data_len, file->filename);
         }
-        fclose(filePtr);
-        pthread_mutex_unlock(&file->fileLock);
-        strcpy(requestPacket->pageRequest,filename);
-        // printCacheFilenames();
-        /*
-
-            1. Check cache for file
-                1. Decomp requested file from url using some templating or some shit - DO NOT USE HOST FIELD
-                2. 
-            2. If Exists - Retreive it using buildResponsePacket
-            3. If does not exists - request it using reqRemHostData & cache it, return it using buildResponsePacket
-            
-        */
-        // fwrite(buffer,1,data_len,stdout);
+        int test = isDynamicPage(file->filename);
+        strcpy(requestPacket->pageRequest,file->filename);
         buildResponsePacket(requestPacket, responsePacket, decodeStatus);
+        if (test){
+            printf("THIS IS A DYNAMIC PAGE IM GONNA DELETE IT!\n");
+            remove(file->filename);
+        } 
+        pthread_mutex_unlock(&file->fileLock);
+
         length = MAX_DATA/2 + responsePacket->contentLength + 1;
         responseBuffer = (unsigned char*) calloc(1,length);
         length = formulateHttpPacket(responsePacket,responseBuffer, length);
@@ -196,16 +167,10 @@ int main(int argc, char **argv){
     RefreshArgs* refArgs = malloc(sizeof(RefreshArgs));
     refArgs->cache = &cache;
     refArgs->timeout = pageTimeout;
-    time_t last_run = time(NULL);
+    pthread_t ptid2;
+    pthread_create(&ptid2, NULL, &refreshCache, (void*) refArgs);
+    pthread_detach(ptid2);
     while (1){
-        time_t now = time(NULL);
-        printf("TIME DIFF: %f\n", difftime(now, last_run));
-        if (difftime(now, last_run) >= pageTimeout) {
-            pthread_t ptid2;
-            pthread_create(&ptid2, NULL, &refreshCache, (void*) refArgs);
-            pthread_detach(ptid2);
-            last_run = now;
-        }
         if ((newClientSock = accept(sock, (struct sockaddr *) &client, &socketaddr_len)) == ERROR){
             perror("Error in accept : ");
             exit(-1);

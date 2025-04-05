@@ -15,6 +15,7 @@
 #define FILEDIRECTORY "cache"
 #define MAX_URL_LENGTH 200
 #define RESPONSE_MAX 35000 //Maybe?
+#define RESPONSE_BUFFER 4000
 typedef struct httpPacket{ 
     unsigned char* data;
     int status;
@@ -29,17 +30,18 @@ typedef struct httpPacket{
 }httpPacket;
 
 const char* get_content_type(const char* filename);
+int isDynamicPage(const char* filename);
 const char* get_file_extension_or_default(const char* url);
 int formulateHttpPacket(struct httpPacket* packet, char* buffer, size_t bufferSize);
 void printPacket(struct httpPacket* packet);
 int decodeHttpPacket(struct httpPacket* packet, char* buffer);
-int decodeRecvPacket(struct httpPacket* packet, char* buffer1);
+int decodeRecvPacket(struct httpPacket* packet, char* buffer1, ssize_t bytes);
 void get_hostname_from_url(const char *url, char *hostname);
 void stripHttp(const char *url, char *result);
 void extractReqFile(const char *url, char *result);
 void errorPacket(int errorCode, struct httpPacket* responsePacket);
 void replace_url_with_path(char *http_request);
 void print_buffer_with_newlines_and_nulls(const char *buffer, unsigned int bufferLength);
-int forwardRequest(char* hostname_with_port, char* buffer, ssize_t bufferLength, char** response, char* filename);
+int forwardRequest(char* hostname_with_port, char* buffer, ssize_t bufferLength, char* filename);
 void buildResponsePacket(struct httpPacket* requestPacket, struct httpPacket* responsePacket, int decode);
 #endif

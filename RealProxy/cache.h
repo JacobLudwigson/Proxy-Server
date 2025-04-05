@@ -23,7 +23,7 @@ void clear_cache_directory(const char *dirPath);
 void init_cache(DynamicArray* cache);
 void free_cache(DynamicArray* cache);
 void compute_md5(const char* filename, unsigned char* hashBuffer);
-int checkCache(char* filename, DynamicArray* cache);
+int checkCache(DynamicArray* cache, unsigned char* hash);
 void printCacheFilenames(DynamicArray* cache);
 int insertIntoCache(char* filename, DynamicArray* cache);
 void* refreshCache(void* args);

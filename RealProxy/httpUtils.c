@@ -21,6 +21,9 @@ const char* get_content_type(const char* filename) {
         return "application/octet-stream";
     }
 }
+int isDynamicPage(const char* filename){
+    return strstr(filename, "?") != NULL;
+}
 const char* get_file_extension_or_default(const char* url) {
     const char *lastSlash = strrchr(url, '/');
     if (!lastSlash) {
@@ -122,6 +125,17 @@ void printPacket(struct httpPacket* packet){
         packet->contentLength ? packet->contentLength : 0
     );
 }
+void remove_header(char *request, const char *header_to_remove) {
+    char *header_start = strstr(request, header_to_remove);
+    if (header_start) {
+        char *end_of_line = strstr(header_start, "\r\n");
+        if (end_of_line) {
+            // Move the rest of the text over the header
+            end_of_line += 2; // Skip the "\r\n"
+            memmove(header_start, end_of_line, strlen(end_of_line) + 1);
+        }
+    }
+}
 int decodeHttpPacket(struct httpPacket* packet, char* buffer1){
     if (!buffer1) {
         printf("Invalid Buffer!\n");
@@ -155,18 +169,16 @@ int decodeHttpPacket(struct httpPacket* packet, char* buffer1){
             strcpy(packet->contentType, second);
         }
     }
-    // puts(buffer1);
-    // printPacket(packet);
     return 1;
 }
-int decodeRecvPacket(struct httpPacket* packet, char* buffer1){
+int decodeRecvPacket(struct httpPacket* packet, char* buffer1, ssize_t bytes){
     if (!buffer1) {
         printf("Invalid Buffer!\n");
         return 0;
     }
-    size_t len = strlen(buffer1)+1;
-    char buffer[len];
-    strcpy(buffer, buffer1);
+    size_t len = bytes;
+    char buffer[len+1];
+    strncpy(buffer, buffer1, bytes);
     char* line = strtok(buffer, "\r\n");
     char first[50];
     char temp[50];
@@ -261,7 +273,6 @@ void buildResponsePacket(struct httpPacket* requestPacket, struct httpPacket* re
     char filename[MAX_FILENAME_SIZE];
     strcpy(filename,requestPacket->pageRequest);
     if (access(filename, F_OK) != 0){
-        printf("ATTEMPTING TO OPEN: %s\n",filename);
         errorPacket(NOT_FOUND, responsePacket);
         return;
     }
@@ -299,6 +310,49 @@ void buildResponsePacket(struct httpPacket* requestPacket, struct httpPacket* re
     responsePacket->status = OK;
     return;
 }
+// void buildResponsePacket(struct httpPacket* responsePacket, int decode){
+//     strcpy(responsePacket->httpVersion,requestPacket->httpVersion);
+//     if (decode != 1){
+//         errorPacket(400, responsePacket);
+//         return;
+//     }
+//     if (strcmp(requestPacket->requestType,"GET") != 0){
+//         errorPacket(405, responsePacket);
+//         return;
+//     }
+//     if (strcmp(requestPacket->httpVersion, "HTTP/1.1") != 0 && strcmp(requestPacket->httpVersion,"HTTP/1.0") != 0){
+//         strcpy(responsePacket->httpVersion,"HTTP/1.1");
+//         errorPacket(WRONG_HTTP_VERSION, responsePacket);
+//     }
+//     if (strcmp(requestPacket->pageRequest,"/") == 0){
+//         strcpy(requestPacket->pageRequest,"/index.html");
+//     }
+//     char filename[MAX_FILENAME_SIZE];
+//     strcpy(filename,requestPacket->pageRequest);
+//     if (access(filename, F_OK) != 0){
+//         printf("ATTEMPTING TO OPEN: %s\n",filename);
+//         errorPacket(NOT_FOUND, responsePacket);
+//         return;
+//     }
+//     FILE* fptr = fopen(filename, "rb");
+//     fseek(fptr,0, SEEK_END);
+//     long int fileSize = ftell(fptr);
+//     rewind(fptr);
+//     unsigned char* buffer = (unsigned char*) malloc(fileSize+1);
+//     long int bytesRead = fread(buffer,sizeof(char), fileSize,fptr);
+//     if (fileSize != bytesRead){
+//         printf("File read, supposed to read %ld bytes and actually read %ld\n",fileSize, bytesRead);
+//         errorPacket(403, responsePacket);
+//         return;
+//     }
+//     strcpy(responsePacket->contentType, get_content_type(requestPacket->pageRequest));
+//     responsePacket->contentLength = fileSize;
+//     buffer[bytesRead] = '\0';
+//     responsePacket->data = buffer;
+//     fclose(fptr);
+//     responsePacket->status = OK;
+//     return;
+// }
 void print_buffer_with_newlines_and_nulls(const char *buffer, unsigned int bufferLength) {
     // Iterate over each character in the buffer, including the null terminator
     for (size_t i = 0; i <= bufferLength; i++) {
@@ -322,7 +376,7 @@ void print_buffer_with_newlines_and_nulls(const char *buffer, unsigned int buffe
 /*
     Still need some work here. This will send the packet, not receive it.
 */
-int forwardRequest(char* hostname_with_port, char* buffer, ssize_t bufferLength, char** response_out, char* filename){
+int forwardRequest(char* hostname_with_port, char* buffer, ssize_t bufferLength, char* filename){
     int sockfd;
     struct sockaddr_in serveraddr;
     struct hostent *server;
@@ -342,13 +396,13 @@ int forwardRequest(char* hostname_with_port, char* buffer, ssize_t bufferLength,
     server = gethostbyname(hostname);
     if (!server) {
         fprintf(stderr, "ERROR: no such host: %s\n", hostname);
-        exit(-1);
+        return -1;
     }
 
     sockfd = socket(AF_INET, SOCK_STREAM, 0);
     if (sockfd < 0) {
         perror("socket creation failed");
-        exit(-1);
+        return -1;
     }
 
 
@@ -362,16 +416,22 @@ int forwardRequest(char* hostname_with_port, char* buffer, ssize_t bufferLength,
 
     if (connect(sockfd, (struct sockaddr*) &serveraddr, sizeof(serveraddr)) != 0){
         perror("Couldnt connect with server!\n");
-        exit(-1);
+        return -1;
     }
     // print_buffer_with_newlines_and_nulls(buffer, bufferLength);
-    // fwrite(buffer, 1, bufferLength, stdout);
+    printf("PRE MODIFICATION\n");
+
+    fwrite(buffer, 1, bufferLength, stdout);
+    remove_header(buffer, "If-Modified-Since: ");
+    printf("POST MODIFICATION\n");
+    fwrite(buffer, 1, bufferLength, stdout);
+
     if (send(sockfd, buffer, bufferLength, 0) != bufferLength) {
         perror("send failed");
-        exit(-1);
+        return -1;
     }
 
-    char *response = malloc(RESPONSE_MAX);
+    char *response = malloc(RESPONSE_BUFFER+1);
     if (!response) {
         perror("malloc failed");
         close(sockfd);
@@ -379,33 +439,37 @@ int forwardRequest(char* hostname_with_port, char* buffer, ssize_t bufferLength,
     }
 
     size_t total_received = 0;
-    int receivingData = 0;
     ssize_t bytes_received;
-    ssize_t dataSectionBytesReceived;
-    FILE* fptr;
-    char* result;
-    while ((bytes_received = recv(sockfd, response + total_received, RESPONSE_MAX - total_received - 1, 0)) > 0) {
-        if (!receivingData){
-            result = strstr(response+total_received, "\r\n\r\n");
-            if (!result){
-                receivingData = 1;
+    FILE *fptr = NULL;
+    char *bodyStart = NULL;
+    int headersDecoded = 0;
+    struct httpPacket* recvPacket = (httpPacket*) calloc(1, sizeof(httpPacket));
+
+    while ((bytes_received = recv(sockfd, response + total_received, RESPONSE_BUFFER, 0)) > 0) {
+        if (!bodyStart) {
+            if (!headersDecoded){
+                response[RESPONSE_BUFFER] = '\0';
+                decodeRecvPacket(recvPacket, response, bytes_received);
+                printPacket(recvPacket);
+            }
+            bodyStart = strstr(response, "\r\n\r\n");
+            if (bodyStart && (recvPacket->status == 200)) {
+                bodyStart += 4; // Move past the headers
                 fptr = fopen(filename, "w");
-                if (!fptr){
-                    perror("Failed to create file!\n");
-                    return 0;
+                if (!fptr) {
+                    perror("Failed to create file");
+                    free(response);
+                    close(sockfd);
+                    return -1;
                 }
+                fwrite(bodyStart, 1, response + bytes_received - bodyStart, fptr);
             }
+        } else if (fptr) {
+            fwrite(response, 1, bytes_received, fptr);
         }
-        if (receivingData){
-            if (!result && !fptr) {
-                perror("How did we get here?\n");
-                return 0;
-            }
-            fwrite(result, 1, bytes_received, fptr);
-        }
-        total_received += bytes_received;
-        if (total_received >= RESPONSE_MAX - 1) break; // prevent overflow
+        memset(response, 0, RESPONSE_BUFFER);
     }
+
 
     if (bytes_received < 0) {
         perror("recv failed");
@@ -413,11 +477,10 @@ int forwardRequest(char* hostname_with_port, char* buffer, ssize_t bufferLength,
         close(sockfd);
         return -1;
     }
-
-    response[total_received] = '\0'; // Null-terminate
-    // fwrite(response, 1, total_received, stdout);
-    *response_out = response;
-
+    free(response);
+    if (fptr){
+        fclose(fptr);
+    }
     close(sockfd);
     return (int)total_received;
 }

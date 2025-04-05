@@ -39,6 +39,14 @@ void free_cache(DynamicArray* cache){
     }
     da_free(cache);
 }
+
+void safe_filename(char *hex_str) {
+    for (int i = 0; i < 16; i++) {
+        if (hex_str[i] == '/') {
+            hex_str[i] = '_';
+        }
+    }
+}
 void compute_md5(const char* filename, unsigned char* hashBuffer){
     MD5_CTX ctx;
     MD5_Init(&ctx);
@@ -47,14 +55,16 @@ void compute_md5(const char* filename, unsigned char* hashBuffer){
 }
 // Note to self: Keep an eye out for better ways to do this w/o needing a mutex.
 // THEORECTICALLY since this is only reading I shouldnt need this, but its a sanity check for now.
-int checkCache(char* filename, DynamicArray* cache){
-    unsigned char hash[16];
+int checkCache(DynamicArray* cache, unsigned char* hash){
     int index = -1;
-    compute_md5(filename, hash);
     for (long unsigned int i = 0; i < cache->size; i++){
         fileEntry* currFile = cache->items[i];
         //Should probably do a sanity check on elements being within the pageTimeout timestamp here as well
         if (!memcmp(hash,currFile->hash,16)){
+            if((currFile->toDelete==1)){
+                da_remove(cache, i);
+                return -1;
+            }
             index = i;
             break;
         }
@@ -73,16 +83,31 @@ void printCacheFilenames(DynamicArray* cache) {
 }
 /*
     Will use cache mutex lock to check if a given filename exists in the cache. If not, it creates one and inserts it.
+    REMEMBER: The return value of this function is index of file. Negative if new file was created and Positive if file already existed.
+    The return value is also offset by one (I.E. if indexing cache based off of the return value use cache[abs(retVal)-1])
 */
-int insertIntoCache(char* filename, DynamicArray* cache){
+int insertIntoCache(char* url, DynamicArray* cache){
+    unsigned char hash[16];
+    char filename[MAX_FILENAME_SIZE] = FILEDIRECTORY;
+    char httpStrippedUrl[MAX_URL_LENGTH];
+    char requestedFile[MAX_URL_LENGTH];
+
+    stripHttp(url, httpStrippedUrl);
+    compute_md5(httpStrippedUrl, hash);
+    extractReqFile(httpStrippedUrl, requestedFile);
+    const char* extension = get_file_extension_or_default(requestedFile);
+    strcat(filename,"/");
+    safe_filename(hash);
+    strncat(filename,(char*)hash,16);
+    strcat(filename, extension);
     pthread_mutex_lock(&mutex);//=========================/
-        int retVal = checkCache(filename, cache);
+        int retVal = checkCache(cache, hash);
         if (retVal == -1){
             fileEntry* newFile = (fileEntry*) malloc(sizeof(fileEntry));
             newFile->hash = (unsigned char*) malloc(16 * sizeof(char));
             newFile->filename = (char*) malloc(MAX_FILENAME_SIZE * sizeof(char));
             strcpy(newFile->filename,filename);
-            compute_md5(filename, newFile->hash);
+            strncpy((char*) newFile->hash, (char*) hash, 16);
             newFile->timestamp = time(NULL);
             int result = pthread_mutex_init(&newFile->fileLock, NULL);
             if (result != 0){
@@ -90,10 +115,14 @@ int insertIntoCache(char* filename, DynamicArray* cache){
                 exit(-1);
             }
             da_push(cache,newFile);
-            retVal = cache->size-1;
+            retVal = -cache->size;
+            pthread_mutex_lock(&newFile->fileLock);
         }
-        fileEntry* file = cache->items[retVal];
-        pthread_mutex_lock(&file->fileLock);//********************/
+        else{
+            fileEntry* file = cache->items[retVal];
+            retVal += 1;
+            pthread_mutex_lock(&file->fileLock);//********************/
+        }
     pthread_mutex_unlock(&mutex);//=========================/
     return retVal;
 }
@@ -104,15 +133,27 @@ void* refreshCache(void* args){
     DynamicArray* cache = refArgs->cache;
     int timeout = refArgs->timeout;
     time_t now = time(NULL);
-    pthread_mutex_lock(&mutex);
-    for (unsigned int i = 0; i < cache->size; i++){
-
-        fileEntry* currFile = cache->items[i];
-        if (fabs(difftime(now,currFile->timestamp)) >= timeout){
-            da_remove(cache,i);
-            //DELETE THE ELEMENT FROM FILE SYSTEM HERE!!!!!!!!!!!!!!!!!!
+    while(1){
+        // printf("refreshing cache!\n");
+        pthread_mutex_lock(&mutex);
+        for (unsigned int i = 0; i < cache->size;){
+            fileEntry* currFile = cache->items[i];
+            pthread_mutex_lock(&currFile->fileLock);
+            if (fabs(difftime(now,currFile->timestamp)) >= timeout || (currFile->toDelete == 1)){
+                da_remove(cache,i);
+                remove(currFile->filename);
+                free(currFile->filename);
+                free(currFile->hash);
+                pthread_mutex_unlock(&currFile->fileLock);
+                free(currFile);
+                continue;
+            }
+            pthread_mutex_unlock(&currFile->fileLock);
+            i++;
         }
+        pthread_mutex_unlock(&mutex);
+        sleep((int)timeout/2);
     }
-    pthread_mutex_unlock(&mutex);
+
     return NULL;
 }
