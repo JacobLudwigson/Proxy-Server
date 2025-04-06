@@ -1,3 +1,5 @@
+#include <sys/file.h>
+#include <fcntl.h>
 #include <stdio.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
@@ -23,13 +25,25 @@
 #define OK 200
 #define MAX_URL_LENGTH 512
 #define MAX_HOSTNAME_LENGTH 256 //maybe? Idk how long the longest hostname is but these should be enough
-#define DEBUG 1
+#define DEBUG 0
+#define EXTRA_CREDIT_DEBUG 1
 #define INITIAL_BUFFER_SIZE 2048
 #define BLOCKLIST_FILE "./blocklist"
 #define MAX_PATTERN_SIZE 1024
+typedef struct preFetchArgs{
+    char** links;
+    char* sourceHostname;
+}preFetchArgs;
 atomic_int countActiveThreads;
 int pageTimeout;
-
+void freeLinks(char **links) {
+    if (links) {
+        for (int i = 0; links[i] != NULL; i++) {
+            free(links[i]);
+        }
+        free(links);
+    }
+}
 int isBlocked(const char *host, const char *ip) {
     FILE *fp = fopen(BLOCKLIST_FILE, "r");
     if (!fp) return 0;
@@ -201,16 +215,11 @@ int isValidFile(const char *filepath, int timeout) {
     time_t now = time(NULL);
     if (difftime(now, st.st_mtime) >= timeout) {
         if(DEBUG) printf("Invalid file on timeout\n");
-        remove(filepath);
         return 0;
     }
     if(DEBUG) printf("Valid file\n");
     return 1;
 }
-/*
-    I cannot take complete credit for this function. It was inspired by one I saw online
-    while looking into how to handle errors in C web programming. 
-*/
 void sendErrorPacket(int socket, int code, const char* failure){
     char responseBuffer[BUFFER_SIZE];
     snprintf(responseBuffer, sizeof(responseBuffer),
@@ -221,13 +230,285 @@ void sendErrorPacket(int socket, int code, const char* failure){
              code, failure, strlen(failure) + 50);
     send(socket, responseBuffer, strlen(responseBuffer),0);
 }
-//Gracefully exit serve client with a socket close, a message and a return value.
-//Will also update the count active threads
 void* exitServeClient(int socket, const char* message, void* returnVal){
     atomic_fetch_sub(&countActiveThreads,1);
     close(socket);
     if (message) fwrite(message, 1, strlen(message), stdout);
     return returnVal;
+}
+void htmlLinkParser(char* htmlDoc, char*** links1) {
+    size_t capacity = 8;
+    size_t count = 0;
+    *links1 = malloc(capacity * sizeof(char*));
+    if (!*links1) {
+        perror("malloc failed");
+        return;
+    }
+    char **links = *links1;
+
+    char *p = htmlDoc;
+    while (*p != '\0') {
+        // Find the next occurrence of either "href=" or "src=".
+        char *hrefPos = strstr(p, "href=");
+        char *srcPos = strstr(p, "src=");
+        char *next = NULL;
+        int attrLen = 0;
+        
+        if (hrefPos && srcPos) {
+            if (hrefPos < srcPos) {
+                next = hrefPos;
+                attrLen = 5;  // length of "href="
+            } else {
+                next = srcPos;
+                attrLen = 4;  // length of "src="
+            }
+        } else if (hrefPos) {
+            next = hrefPos;
+            attrLen = 5;
+        } else if (srcPos) {
+            next = srcPos;
+            attrLen = 4;
+        } else {
+            break;  // No more occurrences found
+        }
+
+        // Move pointer past the attribute name.
+        next += attrLen;
+
+        // Expecting a quote character as the delimiter (either " or ').
+        if (*next != '"' && *next != '\'') {
+            // If no quote is found, skip this occurrence.
+            p = next;
+            continue;
+        }
+        char delim = *next;
+        next++;  // Skip the opening delimiter.
+
+        // Find the closing delimiter.
+        char *end = strchr(next, delim);
+        if (!end) {
+            // Malformed attribute; break out of the loop.
+            break;
+        }
+
+        // Calculate the length of the URL.
+        size_t len = end - next;
+
+        // Allocate space for the URL string.
+        char *link = malloc(len + 1);
+        if (!link) {
+            perror("malloc failed");
+            for (size_t i = 0; i < count; i++) {
+                free(links[i]);
+            }
+            free(links);
+            return;
+        }
+
+        // Copy the URL into the allocated string.
+        strncpy(link, next, len);
+        link[len] = '\0';
+
+        // Expand the links array if needed.
+        if (count >= capacity) {
+            capacity *= 2;
+            char **tmp = realloc(links, capacity * sizeof(char*));
+            if (!tmp) {
+                perror("realloc failed");
+                free(link);
+                for (size_t i = 0; i < count; i++) {
+                    free(links[i]);
+                }
+                free(links);
+                return;
+            }
+            links = tmp;
+            *links1 = links; // update the caller's pointer as well
+        }
+        links[count++] = link;
+
+        // Advance pointer p past the closing delimiter to continue parsing.
+        p = end + 1;
+    }
+
+    // NULL-terminate the array.
+    char **finalLinks = realloc(links, (count + 1) * sizeof(char*));
+    if (finalLinks) {
+        links = finalLinks;
+        *links1 = links; // update the caller's pointer as well
+    }
+    links[count] = NULL;
+}
+int isUrl(const char *s) {
+    return (strstr(s, "://") != NULL);
+}
+void preFetchURL(char* url){
+    printf("\n\nATTEMPTING TO PREFETCH %s\n", url);
+    if (!strstr(url, "http://")) return;
+    char hostname[MAX_HOSTNAME_LENGTH];
+    char filePath[MAX_HOSTNAME_LENGTH]; //If each of these are half of URL max length it should be good
+    char temp[MAX_HOSTNAME_LENGTH*2] = "";
+    char hash[16];
+    int port, dynamic;
+    getHostNameAndFileFromURL(url, hostname, filePath);
+    if (EXTRA_CREDIT_DEBUG) printf("Extracted hostname and filepath: %s, %s\n", hostname, filePath);
+    getPortFromHostname(hostname,&port);
+    if (EXTRA_CREDIT_DEBUG) printf("Extracted port number : %d\n", port);
+    dynamic = isDynamicPage(url);
+    if (dynamic) return;
+    if (EXTRA_CREDIT_DEBUG) printf("Dynamic page = %d\n", dynamic);
+    struct hostent *server = gethostbyname(hostname);
+    char *ip_str = inet_ntoa(*(struct in_addr *)server->h_addr_list[0]);
+    if (isBlocked(hostname, ip_str)){
+        return;
+    }
+
+    char cachePath[MAX_HOSTNAME_LENGTH+10] = "";
+    memset(cachePath, 0, MAX_HOSTNAME_LENGTH+10);
+    strcat(cachePath,CACHE_DIR);
+    strcat(temp, hostname);
+    strcat(temp, filePath);
+    compute_md5(temp, hash);
+    strncat(cachePath,hash,16);
+
+    const char* fileExtension = getFileExtension(filePath);
+    const char* contentType = getContentType(fileExtension);
+    if (EXTRA_CREDIT_DEBUG) printf("Cache Path: %s\n", cachePath);
+    if (EXTRA_CREDIT_DEBUG) printf("File Extension: %s\n", fileExtension);
+    if (EXTRA_CREDIT_DEBUG) printf("Content Type: %s\n", contentType);
+    if (isValidFile(cachePath, pageTimeout)) return;
+
+    char requestPacketBuffer[MAX_RESPONSE_HEADER_SIZE];
+    memset(requestPacketBuffer, 0, MAX_RESPONSE_HEADER_SIZE);
+    struct sockaddr_in serveraddr;
+
+    if (!server){
+        return;
+    }
+    int serverSocket = socket(AF_INET, SOCK_STREAM, 0);
+    int op = 1;
+    int optval = 1; 
+    if (serverSocket < 0 || setsockopt(serverSocket, SOL_SOCKET,SO_REUSEADDR, &op, sizeof(op)) < 0) {
+        if (EXTRA_CREDIT_DEBUG) printf("Couldnt open server socket");
+        return;
+    }
+    bzero(&serveraddr, sizeof(serveraddr));
+    serveraddr.sin_family = AF_INET;
+    serveraddr.sin_port = htons(port);
+    memcpy(&serveraddr.sin_addr.s_addr, server->h_addr, server->h_length);
+
+    if (connect(serverSocket, (struct sockaddr*) &serveraddr, sizeof(serveraddr)) != 0){
+        close(serverSocket);
+        if (EXTRA_CREDIT_DEBUG) printf("Couldnt connect with server");
+        return;
+    }
+
+    int bytesWritten = snprintf(requestPacketBuffer, MAX_RESPONSE_HEADER_SIZE,
+        "GET %s HTTP/1.1\r\n"
+        "Connection: close\r\n"
+        "Host: %s\r\n"
+        "\r\n",
+        filePath,
+        hostname);
+    if (EXTRA_CREDIT_DEBUG) {
+        printf("\n===================================\n");
+        printf("Proxy to server Prefetch request packet\n");
+        printf("====================================\n\n");
+        fwrite(requestPacketBuffer, 1, MAX_RESPONSE_HEADER_SIZE, stdout);
+    }
+    if (send(serverSocket, requestPacketBuffer, bytesWritten, 0) <= 0){
+        if (EXTRA_CREDIT_DEBUG) printf("Error sending to server");
+        return;
+    }
+    FILE* fptr = fopen(cachePath, "wb");
+    // char *headerEnd = NULL;
+    struct timeval timeout;
+    timeout.tv_sec = 10; 
+    timeout.tv_usec = 0;
+    setsockopt(serverSocket, SOL_SOCKET, SO_RCVTIMEO, (char *)&timeout, sizeof(timeout));
+    int totalSize = 0;
+    int allocatedSize = INITIAL_BUFFER_SIZE;
+    char *responseBuffer = malloc(allocatedSize);
+    
+    int headerParsed = 0;
+    int contentLength = -1;
+    int bytesReceived = 0;
+
+    char receiveBuffer[BUFFER_SIZE];
+    memset(receiveBuffer, 0, BUFFER_SIZE);
+    
+    while ((bytesReceived = recv(serverSocket, receiveBuffer, BUFFER_SIZE, 0)) > 0) {
+        if (totalSize + bytesReceived > allocatedSize) {
+            allocatedSize = (totalSize + bytesReceived) * 2;
+            char *temp = realloc(responseBuffer, allocatedSize);
+            if (!temp) {
+                if (EXTRA_CREDIT_DEBUG) printf("realloc failed");
+                free(responseBuffer);
+                return;
+            }
+            responseBuffer = temp;
+        }
+    
+        memcpy(responseBuffer + totalSize, receiveBuffer, bytesReceived);
+        totalSize += bytesReceived;
+    
+        if (!headerParsed) {
+            char *headerEnd = strstr(responseBuffer, "\r\n\r\n");
+            if (headerEnd != NULL) {
+                headerParsed = 1;
+                char *clHeader = strstr(responseBuffer, "Content-Length:");
+                if (clHeader) {
+                    sscanf(clHeader, "Content-Length: %d", &contentLength);
+                }
+            }
+        }
+        
+        if (headerParsed && contentLength != -1) {
+            char *headerEnd = strstr(responseBuffer, "\r\n\r\n");
+            if (headerEnd != NULL) {
+                int headerLength = (headerEnd - responseBuffer) + 4;
+                if (totalSize - headerLength >= contentLength) {
+                    break;
+                }
+            }
+        }
+    }
+    if (EXTRA_CREDIT_DEBUG) printf("Response buffer return: %s\n", responseBuffer);
+    // if (fptr) {
+    //     char *headerEnd = strstr(responseBuffer, "\r\n\r\n");
+    //     char *contentTypeHeader = strstr(responseBuffer, "Content-Type:");
+    //     char contentType1[50];
+    //     int fetch = 0;
+    //     if (contentTypeHeader) {
+    //         sscanf(contentTypeHeader, "Content-Type: %s", contentType1);
+
+    //         if (strstr(contentType1, "text/html")){
+    //             fetch = 1;
+    //         } 
+    //     }
+    //     if (headerEnd != NULL) {
+    //         int headerLength = (headerEnd - responseBuffer) + 4;
+    //         int fd = open(cachePath, O_RDWR, 0644);
+    //         flock(fd, LOCK_EX);
+    //         fwrite(responseBuffer + headerLength, 1, totalSize - headerLength, fptr);
+    //         flock(fd, LOCK_UN);
+    //         close(fd);
+    //     }
+    //     fclose(fptr);
+    // }
+    // free(responseBuffer);
+}
+void* preFetchManagerThread(void* args){
+    preFetchArgs* preFetchArguments = (preFetchArgs*) args;
+    char** links = preFetchArguments->links;
+    for (int i = 0; links[i] != NULL; i++) {
+        if(isUrl(links[i])){
+            preFetchURL(links[i]);
+        }
+    }
+    freeLinks(links);
+    free(preFetchArguments);
+    return NULL;
 }
 //After immense trial and error I think the best way to do this is keep everything in one function. Forwarding data gets a lot simpler.
 //If I need to add a thread to source data I will have them operate in a shared buffer
@@ -240,12 +521,22 @@ void* serveClient(void* data){
     int serverSocket = -1;
     int persistant = 0;
     do{
-        //Allocate a buffer and receive a request packet and terminate with null
+        int optval = 1;
+        // Enable TCP keepalive? Why is wget closing this conn!??!?!?
+        if (setsockopt(clientSocket, SOL_SOCKET, SO_KEEPALIVE, &optval, sizeof(optval)) < 0) {
+            perror("setsockopt SO_KEEPALIVE failed");
+        }
         char receiveBuffer[BUFFER_SIZE];
         memset(receiveBuffer, 0, BUFFER_SIZE);
         int bytesReceived = recv(clientSocket, receiveBuffer, BUFFER_SIZE-1,0);
-        if (bytesReceived <= 0){
+        if (bytesReceived < 0){
+            perror("Error in recv: ");
+            if (DEBUG) printf("This is the return value from recv(): %d\n", bytesReceived);
             return exitServeClient(clientSocket, "Client timeout, returning...\n", NULL);
+        }
+        else if (bytesReceived == 0) {
+            if (DEBUG) printf("Connection closed by client, recv returned 0\n");
+            return exitServeClient(clientSocket, "Client closed connection, returning...\n", NULL);
         }
         receiveBuffer[bytesReceived] = '\0';
 
@@ -274,16 +565,17 @@ void* serveClient(void* data){
             return exitServeClient(clientSocket, "Closing client on unsupported method", NULL);
         }
         char* startConnHeader = strstr(receiveBuffer, "Connection: ");
-        char* endConnHeader = strstr(startConnHeader, "\r\n");
+        char* endConnHeader;
+        if (startConnHeader) endConnHeader = strstr(startConnHeader, "\r\n");
         char connHeader[50];
-        if(!connHeader || !endConnHeader){
+        if(!startConnHeader || !endConnHeader){
             strcpy(connHeader,"close");
         } 
         else{
             strncpy(connHeader, startConnHeader+12, endConnHeader- (startConnHeader + 12));
         }
         if (DEBUG) printf("Connection Header : %s\n", connHeader);
-        if (!strcmp(connHeader, "Keep-Alive")) persistant = 1;
+        if (!strcmp(connHeader, "Keep-Alive") || !strcmp(connHeader,"keep-alive")) persistant = 1;
         if (!persistant) printf("Did not establish persistant conn : %s\n", connHeader);
 
 
@@ -298,7 +590,12 @@ void* serveClient(void* data){
         if (DEBUG) printf("Extracted port number : %d\n", port);
         dynamic = isDynamicPage(url);
         if (DEBUG) printf("Dynamic page = %d\n", dynamic);
-
+        struct hostent *server = gethostbyname(hostname);
+        char *ip_str = inet_ntoa(*(struct in_addr *)server->h_addr_list[0]);
+        if (isBlocked(hostname, ip_str)){
+            sendErrorPacket(clientSocket, 403, "Blocked Host\n");
+            return exitServeClient(clientSocket, "Closing client on blocked host", NULL);
+        }
         char cachePath[MAX_HOSTNAME_LENGTH+10] = "";
         memset(cachePath, 0, MAX_HOSTNAME_LENGTH+10);
         if (!dynamic){
@@ -320,7 +617,11 @@ void* serveClient(void* data){
                     long unsigned int length = ftell(fptr);
                     rewind(fptr);
                     unsigned char* fileReadBuffer = (unsigned char*) malloc(length * sizeof(char));
+                    int fd = open(cachePath, O_RDWR, 0644);
+                    flock(fd, LOCK_EX);
                     fread(fileReadBuffer, 1, length, fptr);
+                    flock(fd, LOCK_UN);
+                    close(fd);
                     //Need to formulate this into a packet first
                     char* fullPacketBuffer = (char*) malloc(length + MAX_RESPONSE_HEADER_SIZE * sizeof(char));
                     int bytesWritten = snprintf(fullPacketBuffer, MAX_RESPONSE_HEADER_SIZE,
@@ -335,12 +636,6 @@ void* serveClient(void* data){
                         length);
                     memmove(fullPacketBuffer + bytesWritten, fileReadBuffer, length);
                     send(clientSocket, fullPacketBuffer, length + bytesWritten, 0);
-                    // if (DEBUG) {
-                    //     printf("\n==================================\n");
-                    //     printf("=Proxy to client cache filed packet=\n");
-                    //     printf("==================================\n\n");
-                    //     fwrite(fullPacketBuffer, 1, length+bytesWritten, stdout);
-                    // }
                     fclose(fptr);
                     free(fileReadBuffer);
                     free(fullPacketBuffer);
@@ -348,7 +643,6 @@ void* serveClient(void* data){
                 }
             }
         }
-        struct hostent *server = gethostbyname(hostname);
         char requestPacketBuffer[MAX_RESPONSE_HEADER_SIZE];
         memset(requestPacketBuffer, 0, MAX_RESPONSE_HEADER_SIZE);
         struct sockaddr_in serveraddr;
@@ -403,25 +697,17 @@ void* serveClient(void* data){
             sendErrorPacket(clientSocket, 500, "Error sending to server");
             return exitServeClient(clientSocket, "Couldnt send to server...\n", NULL);
         }
-        int inData = 0;
         FILE* fptr;
         if (!dynamic){
             fptr = fopen(cachePath, "wb");
         }
-        char* bodyStart;
-        int totalBodyReceived = 0;
-        char *headerEnd = NULL;
         struct timeval timeout;
         timeout.tv_sec = 10; 
         timeout.tv_usec = 0;
         setsockopt(serverSocket, SOL_SOCKET, SO_RCVTIMEO, (char *)&timeout, sizeof(timeout));
-        int totalSize = 0;                    // Total bytes accumulated
+        int totalSize = 0;
         int allocatedSize = INITIAL_BUFFER_SIZE;
         char *responseBuffer = malloc(allocatedSize);
-        if (!responseBuffer) {
-            perror("malloc failed");
-            return exitServeClient(clientSocket, "Memory allocation error\n", NULL);
-        }
         
         int headerParsed = 0;
         int contentLength = -1;
@@ -477,20 +763,44 @@ void* serveClient(void* data){
         
         if (fptr) {
             char *headerEnd = strstr(responseBuffer, "\r\n\r\n");
+            char *contentTypeHeader = strstr(responseBuffer, "Content-Type:");
+            char contentType1[50];
+            int fetch = 0;
+            if (contentTypeHeader) {
+                sscanf(contentTypeHeader, "Content-Type: %s", contentType1);
+
+                if (strstr(contentType1, "text/html")){
+                    fetch = 1;
+                } 
+            }
             if (headerEnd != NULL) {
                 int headerLength = (headerEnd - responseBuffer) + 4;
+                int fd = open(cachePath, O_RDWR, 0644);
+                flock(fd, LOCK_EX);
                 fwrite(responseBuffer + headerLength, 1, totalSize - headerLength, fptr);
+                flock(fd, LOCK_UN);
+                close(fd);
+                if (fetch){
+                    responseBuffer[totalSize] = '\0';
+                    char** links = NULL;
+                    htmlLinkParser(headerEnd + 4,&links);
+                    preFetchArgs* preArgs = (preFetchArgs*) malloc(sizeof(preFetchArgs));
+                    preArgs->links = links;
+                    preArgs->sourceHostname = hostname;
+                    pthread_t ptid;
+                    pthread_create(&ptid, NULL, &preFetchManagerThread, (void*) preArgs);
+                    pthread_detach(ptid);
+                }
             }
             fclose(fptr);
         }
         free(responseBuffer);
-
-        if (persistant) printf("Maintaining Persistant connection!\n");
+        if (DEBUG && persistant) printf("Maintaining Persistant connection!\n");
     }while (persistant);
     if (serverSocket >= 0){
         close(serverSocket);
     }
-    exitServeClient(clientSocket, "Served...\n", NULL);
+    return exitServeClient(clientSocket, "Served...\n", NULL);
 }
 
 
