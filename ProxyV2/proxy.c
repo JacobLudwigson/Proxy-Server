@@ -26,7 +26,7 @@
 #define MAX_URL_LENGTH 512
 #define MAX_HOSTNAME_LENGTH 256 //maybe? Idk how long the longest hostname is but these should be enough
 #define DEBUG 0
-#define EXTRA_CREDIT_DEBUG 1
+#define EXTRA_CREDIT_DEBUG 0
 #define INITIAL_BUFFER_SIZE 2048
 #define BLOCKLIST_FILE "./blocklist"
 #define MAX_PATTERN_SIZE 1024
@@ -236,19 +236,15 @@ void* exitServeClient(int socket, const char* message, void* returnVal){
     if (message) fwrite(message, 1, strlen(message), stdout);
     return returnVal;
 }
+//Baffled this works as well as it does but game is game 
+//Note to self: look here for prefetching problems
 void htmlLinkParser(char* htmlDoc, char*** links1) {
     size_t capacity = 8;
     size_t count = 0;
     *links1 = malloc(capacity * sizeof(char*));
-    if (!*links1) {
-        perror("malloc failed");
-        return;
-    }
     char **links = *links1;
-
     char *p = htmlDoc;
     while (*p != '\0') {
-        // Find the next occurrence of either "href=" or "src=".
         char *hrefPos = strstr(p, "href=");
         char *srcPos = strstr(p, "src=");
         char *next = NULL;
@@ -257,44 +253,36 @@ void htmlLinkParser(char* htmlDoc, char*** links1) {
         if (hrefPos && srcPos) {
             if (hrefPos < srcPos) {
                 next = hrefPos;
-                attrLen = 5;  // length of "href="
-            } else {
+                attrLen = 5;
+            } 
+            else {
                 next = srcPos;
-                attrLen = 4;  // length of "src="
+                attrLen = 4;
             }
-        } else if (hrefPos) {
+        } 
+        else if (hrefPos) {
             next = hrefPos;
             attrLen = 5;
-        } else if (srcPos) {
+        } 
+        else if (srcPos) {
             next = srcPos;
             attrLen = 4;
-        } else {
-            break;  // No more occurrences found
+        } 
+        else {
+            break;
         }
-
-        // Move pointer past the attribute name.
         next += attrLen;
-
-        // Expecting a quote character as the delimiter (either " or ').
         if (*next != '"' && *next != '\'') {
-            // If no quote is found, skip this occurrence.
             p = next;
             continue;
         }
         char delim = *next;
-        next++;  // Skip the opening delimiter.
-
-        // Find the closing delimiter.
+        next++;
         char *end = strchr(next, delim);
         if (!end) {
-            // Malformed attribute; break out of the loop.
             break;
         }
-
-        // Calculate the length of the URL.
         size_t len = end - next;
-
-        // Allocate space for the URL string.
         char *link = malloc(len + 1);
         if (!link) {
             perror("malloc failed");
@@ -304,17 +292,13 @@ void htmlLinkParser(char* htmlDoc, char*** links1) {
             free(links);
             return;
         }
-
-        // Copy the URL into the allocated string.
         strncpy(link, next, len);
         link[len] = '\0';
-
-        // Expand the links array if needed.
         if (count >= capacity) {
             capacity *= 2;
             char **tmp = realloc(links, capacity * sizeof(char*));
             if (!tmp) {
-                perror("realloc failed");
+                if (EXTRA_CREDIT_DEBUG) printf("realloc failed\n");
                 free(link);
                 for (size_t i = 0; i < count; i++) {
                     free(links[i]);
@@ -323,19 +307,15 @@ void htmlLinkParser(char* htmlDoc, char*** links1) {
                 return;
             }
             links = tmp;
-            *links1 = links; // update the caller's pointer as well
+            *links1 = links;
         }
         links[count++] = link;
-
-        // Advance pointer p past the closing delimiter to continue parsing.
         p = end + 1;
     }
-
-    // NULL-terminate the array.
     char **finalLinks = realloc(links, (count + 1) * sizeof(char*));
     if (finalLinks) {
         links = finalLinks;
-        *links1 = links; // update the caller's pointer as well
+        *links1 = links;
     }
     links[count] = NULL;
 }
@@ -343,8 +323,8 @@ int isUrl(const char *s) {
     return (strstr(s, "://") != NULL);
 }
 void preFetchURL(char* url){
-    printf("\n\nATTEMPTING TO PREFETCH %s\n", url);
     if (!strstr(url, "http://")) return;
+    printf("Prefetching %s\n", url);
     char hostname[MAX_HOSTNAME_LENGTH];
     char filePath[MAX_HOSTNAME_LENGTH]; //If each of these are half of URL max length it should be good
     char temp[MAX_HOSTNAME_LENGTH*2] = "";
@@ -387,7 +367,6 @@ void preFetchURL(char* url){
     }
     int serverSocket = socket(AF_INET, SOCK_STREAM, 0);
     int op = 1;
-    int optval = 1; 
     if (serverSocket < 0 || setsockopt(serverSocket, SOL_SOCKET,SO_REUSEADDR, &op, sizeof(op)) < 0) {
         if (EXTRA_CREDIT_DEBUG) printf("Couldnt open server socket");
         return;
@@ -421,7 +400,6 @@ void preFetchURL(char* url){
         return;
     }
     FILE* fptr = fopen(cachePath, "wb");
-    // char *headerEnd = NULL;
     struct timeval timeout;
     timeout.tv_sec = 10; 
     timeout.tv_usec = 0;
@@ -436,22 +414,34 @@ void preFetchURL(char* url){
 
     char receiveBuffer[BUFFER_SIZE];
     memset(receiveBuffer, 0, BUFFER_SIZE);
-    
+
     while ((bytesReceived = recv(serverSocket, receiveBuffer, BUFFER_SIZE, 0)) > 0) {
         if (totalSize + bytesReceived > allocatedSize) {
             allocatedSize = (totalSize + bytesReceived) * 2;
             char *temp = realloc(responseBuffer, allocatedSize);
             if (!temp) {
-                if (EXTRA_CREDIT_DEBUG) printf("realloc failed");
+                if (EXTRA_CREDIT_DEBUG) printf("Realloc failed\n");
                 free(responseBuffer);
                 return;
             }
             responseBuffer = temp;
         }
-    
+
         memcpy(responseBuffer + totalSize, receiveBuffer, bytesReceived);
         totalSize += bytesReceived;
-    
+        if (totalSize < allocatedSize) {
+            responseBuffer[totalSize] = '\0';
+        } else {
+            char *temp = realloc(responseBuffer, totalSize + 1);
+            if (!temp) {
+                if (EXTRA_CREDIT_DEBUG) printf("Realloc failed for terminator\n");
+                free(responseBuffer);
+                return;
+            }
+            responseBuffer = temp;
+            responseBuffer[totalSize] = '\0';
+        }
+
         if (!headerParsed) {
             char *headerEnd = strstr(responseBuffer, "\r\n\r\n");
             if (headerEnd != NULL) {
@@ -473,34 +463,33 @@ void preFetchURL(char* url){
             }
         }
     }
-    if (EXTRA_CREDIT_DEBUG) printf("Response buffer return: %s\n", responseBuffer);
-    // if (fptr) {
-    //     char *headerEnd = strstr(responseBuffer, "\r\n\r\n");
-    //     char *contentTypeHeader = strstr(responseBuffer, "Content-Type:");
-    //     char contentType1[50];
-    //     int fetch = 0;
-    //     if (contentTypeHeader) {
-    //         sscanf(contentTypeHeader, "Content-Type: %s", contentType1);
-
-    //         if (strstr(contentType1, "text/html")){
-    //             fetch = 1;
-    //         } 
-    //     }
-    //     if (headerEnd != NULL) {
-    //         int headerLength = (headerEnd - responseBuffer) + 4;
-    //         int fd = open(cachePath, O_RDWR, 0644);
-    //         flock(fd, LOCK_EX);
-    //         fwrite(responseBuffer + headerLength, 1, totalSize - headerLength, fptr);
-    //         flock(fd, LOCK_UN);
-    //         close(fd);
-    //     }
-    //     fclose(fptr);
-    // }
-    // free(responseBuffer);
+    // if (EXTRA_CREDIT_DEBUG) printf("Response buffer return: %s\n", responseBuffer);
+    if (fptr) {
+        char *headerEnd = strstr(responseBuffer, "\r\n\r\n");
+        if (headerEnd != NULL) {
+            int headerLength = (headerEnd - responseBuffer) + 4;
+            int fd = open(cachePath, O_RDWR, 0644);
+            flock(fd, LOCK_EX);
+            fwrite(responseBuffer + headerLength, 1, totalSize - headerLength, fptr);
+            flock(fd, LOCK_UN);
+            close(fd);
+        }
+        fclose(fptr);
+    }
+    free(responseBuffer);
 }
+//Note to self: Should I be worried about this thread when considering whether to terminate?
+//It wont free its resources if I ctrl+c and dont wait for it, but also why should I want to wait
+//if Im just prefetching a link? Let the OS clean up the resources if the program terminates...?
+//Look here for seg faults/mem leaks
+//
+// Change my mind Im doing it anyway its not like its a keep alive conn
+// Worst case this terminates without freeing resources after 10 seconds anyway, just like serveClient will.
 void* preFetchManagerThread(void* args){
+    atomic_fetch_add(&countActiveThreads,1);
     preFetchArgs* preFetchArguments = (preFetchArgs*) args;
     char** links = preFetchArguments->links;
+    
     for (int i = 0; links[i] != NULL; i++) {
         if(isUrl(links[i])){
             preFetchURL(links[i]);
@@ -508,10 +497,10 @@ void* preFetchManagerThread(void* args){
     }
     freeLinks(links);
     free(preFetchArguments);
+    atomic_fetch_sub(&countActiveThreads,1);
+
     return NULL;
 }
-//After immense trial and error I think the best way to do this is keep everything in one function. Forwarding data gets a lot simpler.
-//If I need to add a thread to source data I will have them operate in a shared buffer
 void* serveClient(void* data){
     //Update the counter for active threads
     atomic_fetch_add(&countActiveThreads,1);
@@ -718,16 +707,33 @@ void* serveClient(void* data){
                 allocatedSize = (totalSize + bytesReceived) * 2;
                 char *temp = realloc(responseBuffer, allocatedSize);
                 if (!temp) {
-                    perror("realloc failed");
+                    if (DEBUG) printf("Realloc failed\n");
+                    close(serverSocket);
+                    sendErrorPacket(clientSocket, 500, "Internal Server Error");
                     free(responseBuffer);
-                    return exitServeClient(clientSocket, "Memory allocation error\n", NULL);
+                    return exitServeClient(clientSocket, "Internal Server Error - could realloc...\n", NULL);
                 }
                 responseBuffer = temp;
             }
-        
+    
             memcpy(responseBuffer + totalSize, receiveBuffer, bytesReceived);
             totalSize += bytesReceived;
-        
+    
+            if (totalSize < allocatedSize) {
+                responseBuffer[totalSize] = '\0';
+            } else {
+                char *temp = realloc(responseBuffer, totalSize + 1);
+                if (!temp) {
+                    if (DEBUG) printf("Realloc failed\n");
+                    close(serverSocket);
+                    sendErrorPacket(clientSocket, 500, "Internal Server Error");
+                    free(responseBuffer);
+                    return exitServeClient(clientSocket, "Internal Server Error - could realloc...\n", NULL);
+                }
+                responseBuffer = temp;
+                responseBuffer[totalSize] = '\0';
+            }
+    
             if (!headerParsed) {
                 char *headerEnd = strstr(responseBuffer, "\r\n\r\n");
                 if (headerEnd != NULL) {
