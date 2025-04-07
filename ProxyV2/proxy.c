@@ -546,11 +546,13 @@ void* serveClient(void* data){
             sendErrorPacket(clientSocket, 400, "Malformed Request!\n");
             return exitServeClient(clientSocket, "Closing client on malformed request...\n", NULL);
         }
-
+        if (!strcmp(httpVersion,"HTTP/1.0") && !strcmp(httpVersion,"HTTP/1.1")){
+            sendErrorPacket(clientSocket, 400, "Wrong HTTP Version!\n");
+            return exitServeClient(clientSocket, "Closing client on wrong http version...\n", NULL);
+        }
         //If its not a http or GET request you can GET OUTA HERE RAHHHH
         if (!strstr(url, "http://") || strcmp(requestType, "GET") != 0){
-            //Im not sure what this error packet should be? Gonna go with 405 but its not listed
-            sendErrorPacket(clientSocket, 405, "Unsupported Method\n");
+            sendErrorPacket(clientSocket, 400, "Unsupported Method\n");
             return exitServeClient(clientSocket, "Closing client on unsupported method", NULL);
         }
         char* startConnHeader = strstr(receiveBuffer, "Connection: ");
@@ -564,7 +566,7 @@ void* serveClient(void* data){
             strncpy(connHeader, startConnHeader+12, endConnHeader- (startConnHeader + 12));
         }
         if (DEBUG) printf("Connection Header : %s\n", connHeader);
-        if (!strcmp(connHeader, "Keep-Alive") || !strcmp(connHeader,"keep-alive")) persistant = 1;
+        if (!strncmp(connHeader, "Keep-Alive",11) || !strncmp(connHeader,"keep-alive",11)) persistant = 1;
         if (!persistant) printf("Did not establish persistant conn : %s\n", connHeader);
 
 
@@ -781,11 +783,10 @@ void* serveClient(void* data){
             }
             if (headerEnd != NULL) {
                 int headerLength = (headerEnd - responseBuffer) + 4;
-                int fd = open(cachePath, O_RDWR, 0644);
+                int fd = fileno(fptr);
                 flock(fd, LOCK_EX);
                 fwrite(responseBuffer + headerLength, 1, totalSize - headerLength, fptr);
                 flock(fd, LOCK_UN);
-                close(fd);
                 if (fetch){
                     responseBuffer[totalSize] = '\0';
                     char** links = NULL;
@@ -798,7 +799,7 @@ void* serveClient(void* data){
                     pthread_detach(ptid);
                 }
             }
-            fclose(fptr);
+            if (fptr) fclose(fptr);
         }
         free(responseBuffer);
         if (DEBUG && persistant) printf("Maintaining Persistant connection!\n");
