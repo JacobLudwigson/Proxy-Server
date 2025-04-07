@@ -18,7 +18,7 @@
 #include <dirent.h>
 #include <regex.h>
 #define ERROR -1
-#define BUFFER_SIZE 4096
+#define BUFFER_SIZE 8192
 #define MAX_RESPONSE_HEADER_SIZE 1024
 #define CACHE_DIR "./cache/"
 #define MAX_CLIENTS 100
@@ -109,13 +109,17 @@ void killHandler(int sig){
     exit(1);
 }
 void compute_md5(const char* filename, unsigned char* hashBuffer){
+    unsigned char md5Hash[MD5_DIGEST_LENGTH];
     MD5_CTX ctx;
     MD5_Init(&ctx);
     MD5_Update(&ctx, filename, strlen(filename));
-    MD5_Final(hashBuffer, &ctx);
+    MD5_Final(md5Hash, &ctx);
+    for (int i = 0; i < MD5_DIGEST_LENGTH; i++) {
+        sprintf((char*)(hashBuffer + i * 2), "%02x", md5Hash[i]);
+    }
 }
 void safeFilename(char *hex_str) {
-    for (int i = 0; i < 16; i++) {
+    for (int i = 0; i < MD5_DIGEST_LENGTH*2; i++) {
         if (hex_str[i] == '/') {
             hex_str[i] = '_';
         }
@@ -328,7 +332,7 @@ void preFetchURL(char* url){
     char hostname[MAX_HOSTNAME_LENGTH];
     char filePath[MAX_HOSTNAME_LENGTH]; //If each of these are half of URL max length it should be good
     char temp[MAX_HOSTNAME_LENGTH*2] = "";
-    char hash[16];
+    char hash[MD5_DIGEST_LENGTH*2+1];
     int port, dynamic;
     getHostNameAndFileFromURL(url, hostname, filePath);
     if (EXTRA_CREDIT_DEBUG) printf("Extracted hostname and filepath: %s, %s\n", hostname, filePath);
@@ -349,7 +353,7 @@ void preFetchURL(char* url){
     strcat(temp, hostname);
     strcat(temp, filePath);
     compute_md5(temp, hash);
-    strncat(cachePath,hash,16);
+    strncat(cachePath,hash,MD5_DIGEST_LENGTH*2);
 
     const char* fileExtension = getFileExtension(filePath);
     const char* contentType = getContentType(fileExtension);
@@ -509,6 +513,8 @@ void* serveClient(void* data){
     free(data);
     int serverSocket = -1;
     int persistant = 0;
+    char previousHostname[MAX_HOSTNAME_LENGTH] = "";
+    int needNewSocket = 1;
     do{
         int optval = 1;
         // Enable TCP keepalive? Why is wget closing this conn!??!?!?
@@ -519,7 +525,6 @@ void* serveClient(void* data){
         memset(receiveBuffer, 0, BUFFER_SIZE);
         int bytesReceived = recv(clientSocket, receiveBuffer, BUFFER_SIZE-1,0);
         if (bytesReceived < 0){
-            perror("Error in recv: ");
             if (DEBUG) printf("This is the return value from recv(): %d\n", bytesReceived);
             return exitServeClient(clientSocket, "Client timeout, returning...\n", NULL);
         }
@@ -553,7 +558,7 @@ void* serveClient(void* data){
         //If its not a http or GET request you can GET OUTA HERE RAHHHH
         if (!strstr(url, "http://") || strcmp(requestType, "GET") != 0){
             sendErrorPacket(clientSocket, 400, "Unsupported Method\n");
-            return exitServeClient(clientSocket, "Closing client on unsupported method", NULL);
+            return exitServeClient(clientSocket, "Closing client on unsupported method\n", NULL);
         }
         char* startConnHeader = strstr(receiveBuffer, "Connection: ");
         char* endConnHeader;
@@ -573,15 +578,32 @@ void* serveClient(void* data){
         char hostname[MAX_HOSTNAME_LENGTH];
         char filePath[MAX_HOSTNAME_LENGTH]; //If each of these are half of URL max length it should be good
         char temp[MAX_HOSTNAME_LENGTH*2] = "";
-        char hash[16];
+        char hash[MD5_DIGEST_LENGTH*2+1];
         int port, dynamic;
         getHostNameAndFileFromURL(url, hostname, filePath);
+        if (strcmp(previousHostname, hostname) == 0){
+            needNewSocket = 0;
+        }
+        else{
+            needNewSocket = 1;
+        }
+
+        strcpy(previousHostname, hostname);
         if (DEBUG) printf("Extracted hostname and filepath: %s, %s\n", hostname, filePath);
         getPortFromHostname(hostname,&port);
         if (DEBUG) printf("Extracted port number : %d\n", port);
         dynamic = isDynamicPage(url);
         if (DEBUG) printf("Dynamic page = %d\n", dynamic);
-        struct hostent *server = gethostbyname(hostname);
+        struct hostent *tempH = gethostbyname(hostname);
+        if (!tempH){
+            sendErrorPacket(clientSocket, 404, "Host not found");
+            return exitServeClient(clientSocket, "Exiting client on host not found...\n", NULL);
+        }
+        struct hostent *server = calloc(1, sizeof(struct hostent));
+        memcpy(server,tempH,sizeof(struct hostent));
+
+
+
         char *ip_str = inet_ntoa(*(struct in_addr *)server->h_addr_list[0]);
         if (isBlocked(hostname, ip_str)){
             sendErrorPacket(clientSocket, 403, "Blocked Host\n");
@@ -594,7 +616,7 @@ void* serveClient(void* data){
             strcat(temp, hostname);
             strcat(temp, filePath);
             compute_md5(temp, hash);
-            strncat(cachePath,hash,16);
+            strncat(cachePath,hash,MD5_DIGEST_LENGTH*2);
 
             const char* fileExtension = getFileExtension(filePath);
             const char* contentType = getContentType(fileExtension);
@@ -628,6 +650,7 @@ void* serveClient(void* data){
                     memmove(fullPacketBuffer + bytesWritten, fileReadBuffer, length);
                     send(clientSocket, fullPacketBuffer, length + bytesWritten, 0);
                     fclose(fptr);
+                    free(server);
                     free(fileReadBuffer);
                     free(fullPacketBuffer);
                     continue;
@@ -646,15 +669,14 @@ void* serveClient(void* data){
             close(serverSocket);
             serverSocket = -1;
         }
-        if (serverSocket == -1){
+        if (serverSocket == -1 || needNewSocket){
             if (!server){
                 sendErrorPacket(clientSocket, 404, "Host not found");
                 return exitServeClient(clientSocket, "Exiting client on host not found...\n", NULL);
             }
             serverSocket = socket(AF_INET, SOCK_STREAM, 0);
             int op = 1;
-            int optval = 1; 
-            if (serverSocket < 0 || setsockopt(serverSocket, SOL_SOCKET,SO_REUSEADDR, &op, sizeof(op)) < 0 || setsockopt(serverSocket, SOL_SOCKET, SO_KEEPALIVE, &optval, sizeof(optval)) < 0) {
+            if (serverSocket < 0 || setsockopt(serverSocket, SOL_SOCKET,SO_REUSEADDR, &op, sizeof(op)) < 0) {
                 sendErrorPacket(clientSocket, 500, "Couldnt open server socket");
                 return exitServeClient(clientSocket, "Couldnt open server socket...\n", NULL);
             }
@@ -662,7 +684,7 @@ void* serveClient(void* data){
             serveraddr.sin_family = AF_INET;
             serveraddr.sin_port = htons(port);
             memcpy(&serveraddr.sin_addr.s_addr, server->h_addr, server->h_length);
-    
+
             if (connect(serverSocket, (struct sockaddr*) &serveraddr, sizeof(serveraddr)) != 0){
                 close(serverSocket);
                 sendErrorPacket(clientSocket, 500, "Couldnt connect with server");
@@ -698,13 +720,14 @@ void* serveClient(void* data){
         setsockopt(serverSocket, SOL_SOCKET, SO_RCVTIMEO, (char *)&timeout, sizeof(timeout));
         int totalSize = 0;
         int allocatedSize = INITIAL_BUFFER_SIZE;
-        char *responseBuffer = malloc(allocatedSize);
+        char *responseBuffer = calloc(allocatedSize, sizeof(char));
         
         int headerParsed = 0;
         int contentLength = -1;
         bytesReceived = 0;
         
         while ((bytesReceived = recv(serverSocket, receiveBuffer, BUFFER_SIZE, 0)) > 0) {
+            // fwrite(receiveBuffer, 1, bytesReceived, stdout);
             if (totalSize + bytesReceived > allocatedSize) {
                 allocatedSize = (totalSize + bytesReceived) * 2;
                 char *temp = realloc(responseBuffer, allocatedSize);
@@ -769,7 +792,7 @@ void* serveClient(void* data){
             sentBytes += bytesSent;
         }
         
-        if (fptr) {
+        if (fptr && responseBuffer) {
             char *headerEnd = strstr(responseBuffer, "\r\n\r\n");
             char *contentTypeHeader = strstr(responseBuffer, "Content-Type:");
             char contentType1[50];
@@ -787,6 +810,8 @@ void* serveClient(void* data){
                 flock(fd, LOCK_EX);
                 fwrite(responseBuffer + headerLength, 1, totalSize - headerLength, fptr);
                 flock(fd, LOCK_UN);
+                fclose(fptr);
+                fptr = NULL;
                 if (fetch){
                     responseBuffer[totalSize] = '\0';
                     char** links = NULL;
@@ -799,8 +824,8 @@ void* serveClient(void* data){
                     pthread_detach(ptid);
                 }
             }
-            if (fptr) fclose(fptr);
         }
+        free(server);
         free(responseBuffer);
         if (DEBUG && persistant) printf("Maintaining Persistant connection!\n");
     }while (persistant);

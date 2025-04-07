@@ -1,7 +1,7 @@
 CC = gcc
 DEBUG ?= 0
 
-CFLAGS = -Wall -Wextra -pedantic -Wno-deprecated-declarations
+CFLAGS = -Wall -w -pedantic -Wno-deprecated-declarations
 LDFLAGS = -lpthread -lcrypto
 
 # Add debugging utils for seg faults bc I apparently cant code without overrunning every buffer Ive ever used
